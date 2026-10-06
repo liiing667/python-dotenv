@@ -10,7 +10,7 @@ from contextlib import contextmanager
 from typing import IO, Dict, Iterable, Iterator, Mapping, Optional, Tuple, Union
 
 from .parser import Binding, parse_stream
-from .variables import parse_variables
+from .variables import _Resolver, parse_variables
 
 # A type alias for a string path to be used for the paths in this file.
 # These paths may flow to `open()` and `os.replace()`.
@@ -81,22 +81,26 @@ class DotEnv:
         if self._dict is not None:
             return self._dict
 
-        raw_values = self.parse()
+        raw_values = list(self._parse_entries())
 
         if self.interpolate:
             self._dict = OrderedDict(
                 resolve_variables(raw_values, override=self.override)
             )
         else:
-            self._dict = OrderedDict(raw_values)
+            self._dict = OrderedDict((key, value) for key, value, _quote in raw_values)
 
         return self._dict
 
     def parse(self) -> Iterator[Tuple[str, Optional[str]]]:
+        for key, value, _quote in self._parse_entries():
+            yield key, value
+
+    def _parse_entries(self) -> Iterator[Tuple[str, Optional[str], Optional[str]]]:
         with self._get_stream() as stream:
             for mapping in with_warn_for_invalid_lines(parse_stream(stream)):
                 if mapping.key is not None:
-                    yield mapping.key, mapping.value
+                    yield mapping.key, mapping.value, mapping.quote
 
     def set_as_environment_variables(self) -> bool:
         """
@@ -331,26 +335,35 @@ def unset_key(
 
 
 def resolve_variables(
-    values: Iterable[Tuple[str, Optional[str]]],
+    values: Iterable[Tuple[str, Optional[str], Optional[str]]],
     override: bool,
 ) -> Mapping[str, Optional[str]]:
     new_values: Dict[str, Optional[str]] = {}
+    resolved: Dict[str, Optional[str]] = {}
 
-    for name, value in values:
+    def lookup(name: str) -> Optional[str]:
+        if not override:
+            return os.environ.get(name, resolved.get(name))
+        if name in resolved:
+            return resolved[name]
+        return os.environ.get(name)
+
+    def assign(name: str, value: str) -> None:
+        resolved[name] = value
+
+    for name, value, quote in values:
         if value is None:
             result = None
+        elif quote == "'":
+            # Single-quoted values are never interpolated.
+            result = value
         else:
             atoms = parse_variables(value)
-            env: Dict[str, Optional[str]] = {}
-            if override:
-                env.update(os.environ)  # type: ignore
-                env.update(new_values)
-            else:
-                env.update(new_values)
-                env.update(os.environ)  # type: ignore
-            result = "".join(atom.resolve(env) for atom in atoms)
+            resolver = _Resolver(lookup=lookup, assign=assign)
+            result = resolver.resolve_atoms(atoms, depth=0)
 
         new_values[name] = result
+        resolved[name] = result
 
     return new_values
 

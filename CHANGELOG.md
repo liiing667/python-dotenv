@@ -7,6 +7,10 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- Variable interpolation now supports the full POSIX parameter expansion operators `${VAR:-word}`, `${VAR-word}`, `${VAR:=word}`, `${VAR=word}`, `${VAR:?message}`, `${VAR?message}`, `${VAR:+word}` and `${VAR+word}`, with nested/recursive expansion in the word, cycle detection and a maximum nesting depth. `\$` and `\${...}` are kept literal, single-quoted values are not interpolated, and `dotenv_values` raises `InterpolationSyntaxError`, `InterpolationCycleError`, `InterpolationDepthError` or `InterpolationValidationError` (all subclasses of `InterpolationError`) to distinguish parse failures from validation failures.
+
 ### Fixed
 
 - Fix a package build deprecation warning caused by a non-string `license` value in `pyproject.toml` by [@kurtmckee] in [#648]

@@ -11,6 +11,12 @@ from unittest import mock
 import pytest
 
 import dotenv
+from dotenv.exceptions import (
+    InterpolationCycleError,
+    InterpolationDepthError,
+    InterpolationSyntaxError,
+    InterpolationValidationError,
+)
 from dotenv.main import DotEnv
 
 
@@ -441,7 +447,9 @@ def test_empty_dotenv_dict_is_cached(tmp_path):
     dotenv_path.write_text("")
     dotenv_obj = DotEnv(dotenv_path)
 
-    with mock.patch.object(dotenv_obj, "parse", wraps=dotenv_obj.parse) as mock_parse:
+    with mock.patch.object(
+        dotenv_obj, "_parse_entries", wraps=dotenv_obj._parse_entries
+    ) as mock_parse:
         assert dotenv_obj.dict() == {}
         assert dotenv_obj.dict() == {}
 
@@ -896,7 +904,39 @@ def test_dotenv_values_file(dotenv_path):
         ({}, "a=${b:-d}", True, {"a": "d"}),
         # With quotes
         ({"b": "c"}, 'a="${b}"', True, {"a": "c"}),
-        ({"b": "c"}, "a='${b}'", True, {"a": "c"}),
+        # Single-quoted values are not interpolated.
+        ({"b": "c"}, "a='${b}'", True, {"a": "${b}"}),
+        ({"b": "c"}, "a='${b}'", False, {"a": "${b}"}),
+        ({"b": "c"}, 'a="x${b}y"', True, {"a": "xcy"}),
+        # Escaped dollar signs are kept literal
+        ({"b": "c"}, "a=\\${b}", True, {"a": "${b}"}),
+        ({"b": "c"}, "a=\\$b", True, {"a": "$b"}),
+        ({"b": "c"}, 'a="\\${b}\\$"', True, {"a": "${b}$"}),
+        # Default / alternative / assignment operators
+        ({"b": ""}, "a=${b:-d}", True, {"a": "d"}),
+        ({"b": "x"}, "a=${b:-d}", True, {"a": "x"}),
+        ({}, "a=${b-d}", True, {"a": "d"}),
+        ({"b": ""}, "a=${b-d}", True, {"a": ""}),
+        ({"b": ""}, "a=${b:+d}", True, {"a": ""}),
+        ({"b": "x"}, "a=${b:+d}", True, {"a": "d"}),
+        ({"b": ""}, "a=${b+d}", True, {"a": "d"}),
+        ({}, "a=${b+d}", True, {"a": ""}),
+        # := writes the default back so later variables see it
+        ({}, "a=${b:=d}\nc=${b}", True, {"a": "d", "c": "d"}),
+        ({"b": ""}, "a=${b:=d}\nc=${b}", True, {"a": "d", "c": "d"}),
+        ({"b": "x"}, "a=${b:=d}\nc=${b}", True, {"a": "x", "c": "x"}),
+        ({}, "a=${b=d}\nc=${b}", True, {"a": "d", "c": "d"}),
+        ({"b": ""}, "a=${b=d}\nc=${b}", True, {"a": "", "c": ""}),
+        # Nested and recursive expansion
+        ({}, "a=${b:-${c:-d}}", True, {"a": "d"}),
+        ({"c": "e"}, "a=${b:-${c}}", True, {"a": "e"}),
+        ({"c": "e"}, "a=${b:=${c}}", True, {"a": "e"}),
+        ({"b": "x", "c": "y"}, "a=${b:?${c}}", True, {"a": "x"}),
+        # Empty string and undefined are distinguishable
+        ({}, "b=\na=${b-x}", True, {"b": "", "a": ""}),
+        ({}, "a=${b-x}", True, {"a": "x"}),
+        ({}, "b=\na=${b+x}", True, {"b": "", "a": "x"}),
+        ({}, "a=${b+x}", True, {"a": ""}),
         # With surrounding text
         ({"b": "c"}, "a=x${b}y", True, {"a": "xcy"}),
         # Self-referential
@@ -929,6 +969,82 @@ def test_dotenv_values_file_stream(dotenv_path):
         result = dotenv.dotenv_values(stream=f)
 
     assert result == {"a": "b"}
+
+
+@pytest.mark.parametrize(
+    "string,message",
+    [
+        ("a=${b:?DB_PORT is required}", "DB_PORT is required"),
+        ("b=\na=${b:?DB_PORT is required}", "DB_PORT is required"),
+        ("a=${b?DB_PORT is required}", "DB_PORT is required"),
+        ("a=${b:-${c:?nested required}}", "nested required"),
+    ],
+)
+def test_dotenv_values_required_error(string, message):
+    with mock.patch.dict(os.environ, {}, clear=True):
+        with pytest.raises(InterpolationValidationError) as exc_info:
+            dotenv.dotenv_values(stream=io.StringIO(string))
+
+    assert message in str(exc_info.value)
+    assert not isinstance(exc_info.value, InterpolationSyntaxError)
+
+
+def test_dotenv_values_required_error_default_message():
+    with mock.patch.dict(os.environ, {}, clear=True):
+        with pytest.raises(InterpolationValidationError) as exc_info:
+            dotenv.dotenv_values(stream=io.StringIO("a=${b:?}"))
+
+    assert "b" in str(exc_info.value)
+
+
+@pytest.mark.parametrize(
+    "string",
+    [
+        "a=${b",
+        "a=${}",
+        "a=${b:-${c}",
+        "a=${b:invalid}",
+    ],
+)
+def test_dotenv_values_syntax_error(string):
+    with mock.patch.dict(os.environ, {}, clear=True):
+        with pytest.raises(InterpolationSyntaxError):
+            dotenv.dotenv_values(stream=io.StringIO(string))
+
+
+@pytest.mark.parametrize(
+    "string,names",
+    [
+        ("a=${a:-${a}}", "a"),
+        ("a=${b:-${a:-${b}}}", "b -> a -> b"),
+    ],
+)
+def test_dotenv_values_cyclic_reference(string, names):
+    with mock.patch.dict(os.environ, {}, clear=True):
+        with pytest.raises(InterpolationCycleError) as exc_info:
+            dotenv.dotenv_values(stream=io.StringIO(string))
+
+    assert names in str(exc_info.value)
+
+
+def test_dotenv_values_maximum_depth():
+    string = "a=" + "${b:-" * 40 + "z" + "}" * 40
+
+    with mock.patch.dict(os.environ, {}, clear=True):
+        with pytest.raises(InterpolationDepthError):
+            dotenv.dotenv_values(stream=io.StringIO(string))
+
+
+def test_load_dotenv_required_error():
+    with mock.patch.dict(os.environ, {}, clear=True):
+        with pytest.raises(InterpolationValidationError):
+            dotenv.load_dotenv(stream=io.StringIO("a=${b:?required}"))
+
+
+def test_load_dotenv_required_passes_when_set():
+    with mock.patch.dict(os.environ, {"b": "x"}, clear=True):
+        assert dotenv.load_dotenv(stream=io.StringIO("a=${b:?required}"), override=True)
+        assert os.environ["a"] == "x"
 
 
 @pytest.mark.parametrize(

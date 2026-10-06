@@ -1,5 +1,12 @@
 from typing import Any, Optional
 
+from .exceptions import (
+    InterpolationCycleError,
+    InterpolationDepthError,
+    InterpolationError,
+    InterpolationSyntaxError,
+    InterpolationValidationError,
+)
 from .main import dotenv_values, find_dotenv, get_key, load_dotenv, set_key, unset_key
 
 
@@ -48,4 +55,9 @@ __all__ = [
     "unset_key",
     "find_dotenv",
     "load_ipython_extension",
+    "InterpolationError",
+    "InterpolationSyntaxError",
+    "InterpolationCycleError",
+    "InterpolationDepthError",
+    "InterpolationValidationError",
 ]
