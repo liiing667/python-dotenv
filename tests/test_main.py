@@ -11,6 +11,12 @@ from unittest import mock
 import pytest
 
 import dotenv
+from dotenv import (
+    CyclicVariableError,
+    InterpolationError,
+    InterpolationSyntaxError,
+    MissingVariableError,
+)
 from dotenv.main import DotEnv
 
 
@@ -441,7 +447,9 @@ def test_empty_dotenv_dict_is_cached(tmp_path):
     dotenv_path.write_text("")
     dotenv_obj = DotEnv(dotenv_path)
 
-    with mock.patch.object(dotenv_obj, "parse", wraps=dotenv_obj.parse) as mock_parse:
+    with mock.patch.object(
+        dotenv_obj, "_parse_entries", wraps=dotenv_obj._parse_entries
+    ) as mock_parse:
         assert dotenv_obj.dict() == {}
         assert dotenv_obj.dict() == {}
 
@@ -896,7 +904,7 @@ def test_dotenv_values_file(dotenv_path):
         ({}, "a=${b:-d}", True, {"a": "d"}),
         # With quotes
         ({"b": "c"}, 'a="${b}"', True, {"a": "c"}),
-        ({"b": "c"}, "a='${b}'", True, {"a": "c"}),
+        ({"b": "c"}, "a='${b}'", True, {"a": "${b}"}),
         # With surrounding text
         ({"b": "c"}, "a=x${b}y", True, {"a": "xcy"}),
         # Self-referential
@@ -929,6 +937,157 @@ def test_dotenv_values_file_stream(dotenv_path):
         result = dotenv.dotenv_values(stream=f)
 
     assert result == {"a": "b"}
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="This test assumes case-sensitive variable names"
+)
+@pytest.mark.parametrize(
+    "env,string,expected",
+    [
+        # ${VAR:=default}: assign when missing
+        ({}, "a=${b:=x}", {"a": "x"}),
+        ({"b": "c"}, "a=${b:=x}", {"a": "c"}),
+        # Empty string is not "missing": no assignment happens
+        ({"b": ""}, "a=${b:=x}", {"a": ""}),
+        # The assigned value is visible to later expansions but is not
+        # added to the returned dict
+        ({}, "a=${b:=x}\nc=${b}", {"a": "x", "c": "x"}),
+        ({}, "a=${b:=x}\nb=y\nc=${b}", {"a": "x", "b": "y", "c": "y"}),
+        # ${VAR:+alt}: alt only when the variable is non-empty
+        ({"b": "c"}, "a=${b:+alt}", {"a": "alt"}),
+        ({"b": ""}, "a=${b:+alt}", {"a": ""}),
+        ({}, "a=${b:+alt}", {"a": ""}),
+        # ${VAR:?message}: no error when the variable is non-empty
+        ({"b": "c"}, "a=${b:?msg}", {"a": "c"}),
+        # Nested and recursive expansion
+        ({}, "a=${b:-${c:-x}}", {"a": "x"}),
+        ({"c": "y"}, "a=${b:-${c:-x}}", {"a": "y"}),
+        ({"b": "1"}, "a=${b:+${d:-y}}", {"a": "y"}),
+        ({}, "a=${b:=${c:=x}}\nd=${c}", {"a": "x", "d": "x"}),
+        ({"x": "1", "y": "2"}, "a=${b:-${x}${y}}", {"a": "12"}),
+        # Escaped dollars stay literal
+        ({}, "a=\\${b}", {"a": "${b}"}),
+        ({}, "a=\\$b", {"a": "$b"}),
+        ({}, "a=x\\${b}y", {"a": "x${b}y"}),
+        ({}, "a=${b:-\\${c}}", {"a": "${c}"}),
+        # Single quotes are not expanded
+        ({"b": "c"}, "a='${b}'", {"a": "${b}"}),
+        ({"b": "c"}, "a='${b:-d}'", {"a": "${b:-d}"}),
+        ({}, "a=${b:-'${c}'}", {"a": "${c}"}),
+        ({}, "a=${b:-'x y'}", {"a": "x y"}),
+        # Empty string and undefined are distinct
+        ({"b": ""}, "a=${b:-d}", {"a": ""}),
+        ({}, "b=\na=${b:+alt}", {"a": "", "b": ""}),
+    ],
+)
+def test_dotenv_values_expansion_operators(env, string, expected):
+    with mock.patch.dict(os.environ, env, clear=True):
+        result = dotenv.dotenv_values(stream=io.StringIO(string))
+
+        assert result == expected
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="This test assumes case-sensitive variable names"
+)
+@pytest.mark.parametrize(
+    "env",
+    [
+        {},
+        {"DB_PORT": ""},
+    ],
+)
+def test_dotenv_values_require_operator_raises(env):
+    string = "DB_PORT=${DB_PORT:?DB_PORT is required}"
+
+    with mock.patch.dict(os.environ, env, clear=True):
+        with pytest.raises(MissingVariableError) as exc_info:
+            dotenv.dotenv_values(stream=io.StringIO(string))
+
+    assert "DB_PORT is required" in str(exc_info.value)
+    assert isinstance(exc_info.value, InterpolationError)
+    assert not isinstance(exc_info.value, InterpolationSyntaxError)
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="This test assumes case-sensitive variable names"
+)
+def test_dotenv_values_require_operator_default_message():
+    with mock.patch.dict(os.environ, {}, clear=True):
+        with pytest.raises(MissingVariableError) as exc_info:
+            dotenv.dotenv_values(stream=io.StringIO("a=${b:?}"))
+
+    assert "b" in str(exc_info.value)
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="This test assumes case-sensitive variable names"
+)
+def test_dotenv_values_require_operator_expands_message():
+    with mock.patch.dict(os.environ, {"hint": "check the config"}, clear=True):
+        with pytest.raises(MissingVariableError) as exc_info:
+            dotenv.dotenv_values(stream=io.StringIO("a=${b:?missing; ${hint}}"))
+
+    assert "missing; check the config" in str(exc_info.value)
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="This test assumes case-sensitive variable names"
+)
+@pytest.mark.parametrize(
+    "string",
+    [
+        "a=${b",
+        "a=${b:-${c}",
+        "a=${b:x}",
+        "a=${b:}",
+    ],
+)
+def test_dotenv_values_expansion_syntax_error(string):
+    with mock.patch.dict(os.environ, {}, clear=True):
+        with pytest.raises(InterpolationSyntaxError) as exc_info:
+            dotenv.dotenv_values(stream=io.StringIO(string))
+
+    assert isinstance(exc_info.value, InterpolationError)
+    assert not isinstance(exc_info.value, MissingVariableError)
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="This test assumes case-sensitive variable names"
+)
+def test_dotenv_values_cyclic_reference():
+    with mock.patch.dict(os.environ, {}, clear=True):
+        with pytest.raises(CyclicVariableError) as exc_info:
+            dotenv.dotenv_values(stream=io.StringIO("a=${b:-${c:-${b:-x}}}"))
+
+    message = str(exc_info.value)
+    assert "b" in message and "c" in message
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="This test assumes case-sensitive variable names"
+)
+def test_dotenv_values_max_expansion_depth():
+    depth = 150
+    string = "a=" + "".join(f"${{v{i}:-" for i in range(depth)) + "x" + "}" * depth
+
+    with mock.patch.dict(os.environ, {}, clear=True):
+        with pytest.raises(InterpolationSyntaxError):
+            dotenv.dotenv_values(stream=io.StringIO(string))
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="This test assumes case-sensitive variable names"
+)
+def test_load_dotenv_require_operator_raises(dotenv_path):
+    dotenv_path.write_text("a=${b:?b is required}")
+
+    with mock.patch.dict(os.environ, {}, clear=True):
+        with pytest.raises(MissingVariableError):
+            dotenv.load_dotenv(dotenv_path)
+
+    assert "a" not in os.environ
 
 
 @pytest.mark.parametrize(

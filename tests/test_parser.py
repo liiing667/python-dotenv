@@ -254,6 +254,7 @@ from dotenv.parser import Binding, Original, parse_stream
                     value="b c ",
                     original=Original(string="a='b c '", line=1),
                     error=False,
+                    single_quoted=True,
                 )
             ],
         ),
@@ -309,6 +310,7 @@ from dotenv.parser import Binding, Original, parse_stream
                     value="b\nc",
                     original=Original(string="a='b\nc'", line=1),
                     error=False,
+                    single_quoted=True,
                 )
             ],
         ),
@@ -342,6 +344,7 @@ from dotenv.parser import Binding, Original, parse_stream
                     value="b\\nc",
                     original=Original(string="a='b\\nc'", line=1),
                     error=False,
+                    single_quoted=True,
                 )
             ],
         ),
@@ -364,6 +367,7 @@ from dotenv.parser import Binding, Original, parse_stream
                     value="b'c",
                     original=Original(string="a='b\\'c'", line=1),
                     error=False,
+                    single_quoted=True,
                 )
             ],
         ),
@@ -375,6 +379,7 @@ from dotenv.parser import Binding, Original, parse_stream
                     value="b\\c",
                     original=Original(string="a='b\\\\c'", line=1),
                     error=False,
+                    single_quoted=True,
                 )
             ],
         ),
@@ -399,12 +404,14 @@ from dotenv.parser import Binding, Original, parse_stream
                     value="b\\",
                     original=Original(string="a='b\\\\'\n", line=1),
                     error=False,
+                    single_quoted=True,
                 ),
                 Binding(
                     key="c",
                     value="d",
                     original=Original(string="c='d'", line=2),
                     error=False,
+                    single_quoted=True,
                 ),
             ],
         ),
@@ -433,6 +440,7 @@ from dotenv.parser import Binding, Original, parse_stream
                     value="b\\'c",
                     original=Original(string="a='b\\\\\\'c'", line=1),
                     error=False,
+                    single_quoted=True,
                 )
             ],
         ),

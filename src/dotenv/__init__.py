@@ -1,6 +1,12 @@
 from typing import Any, Optional
 
 from .main import dotenv_values, find_dotenv, get_key, load_dotenv, set_key, unset_key
+from .variables import (
+    CyclicVariableError,
+    InterpolationError,
+    InterpolationSyntaxError,
+    MissingVariableError,
+)
 
 
 def load_ipython_extension(ipython: Any) -> None:
@@ -40,6 +46,10 @@ def get_cli_string(
 
 
 __all__ = [
+    "CyclicVariableError",
+    "InterpolationError",
+    "InterpolationSyntaxError",
+    "MissingVariableError",
     "get_cli_string",
     "load_dotenv",
     "dotenv_values",

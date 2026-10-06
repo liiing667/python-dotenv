@@ -5,9 +5,19 @@ import pathlib
 import stat
 import sys
 import tempfile
-from collections import OrderedDict
+from collections import ChainMap, OrderedDict
 from contextlib import contextmanager
-from typing import IO, Dict, Iterable, Iterator, Mapping, Optional, Tuple, Union
+from typing import (
+    IO,
+    Dict,
+    Iterable,
+    Iterator,
+    Mapping,
+    MutableMapping,
+    Optional,
+    Tuple,
+    Union,
+)
 
 from .parser import Binding, parse_stream
 from .variables import parse_variables
@@ -81,22 +91,26 @@ class DotEnv:
         if self._dict is not None:
             return self._dict
 
-        raw_values = self.parse()
-
         if self.interpolate:
             self._dict = OrderedDict(
-                resolve_variables(raw_values, override=self.override)
+                resolve_variables(self._parse_entries(), override=self.override)
             )
         else:
-            self._dict = OrderedDict(raw_values)
+            self._dict = OrderedDict(self.parse())
 
         return self._dict
 
     def parse(self) -> Iterator[Tuple[str, Optional[str]]]:
+        for key, value, _interpolate in self._parse_entries():
+            yield key, value
+
+    def _parse_entries(self) -> Iterator[Tuple[str, Optional[str], bool]]:
         with self._get_stream() as stream:
             for mapping in with_warn_for_invalid_lines(parse_stream(stream)):
                 if mapping.key is not None:
-                    yield mapping.key, mapping.value
+                    # Single-quoted values are literal: their content is not
+                    # interpolated.
+                    yield mapping.key, mapping.value, not mapping.single_quoted
 
     def set_as_environment_variables(self) -> bool:
         """
@@ -331,23 +345,32 @@ def unset_key(
 
 
 def resolve_variables(
-    values: Iterable[Tuple[str, Optional[str]]],
+    values: Iterable[Tuple[str, Optional[str], bool]],
     override: bool,
 ) -> Mapping[str, Optional[str]]:
     new_values: Dict[str, Optional[str]] = {}
+    # Values assigned by `${NAME:=default}` expressions. They are visible to
+    # later expansions but are not part of the returned mapping.
+    assigned: Dict[str, str] = {}
 
-    for name, value in values:
-        if value is None:
-            result = None
+    for name, value, interpolate in values:
+        if value is None or not interpolate:
+            result = value
         else:
+            for key in list(assigned):
+                if key in new_values:
+                    del assigned[key]
             atoms = parse_variables(value)
-            env: Dict[str, Optional[str]] = {}
+            base: Dict[str, Optional[str]] = {}
             if override:
-                env.update(os.environ)  # type: ignore
-                env.update(new_values)
+                base.update(os.environ)  # type: ignore
+                base.update(new_values)
             else:
-                env.update(new_values)
-                env.update(os.environ)  # type: ignore
+                base.update(new_values)
+                base.update(os.environ)  # type: ignore
+            # Writes (`${NAME:=...}`) go to `assigned` so they persist across
+            # lines; lookups fall back to `base`.
+            env: MutableMapping[str, Optional[str]] = ChainMap(assigned, base)
             result = "".join(atom.resolve(env) for atom in atoms)
 
         new_values[name] = result

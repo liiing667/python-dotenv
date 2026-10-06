@@ -8,6 +8,7 @@ from typing import (
     Optional,
     Pattern,
     Sequence,
+    Tuple,
 )
 
 
@@ -44,6 +45,7 @@ class Binding(NamedTuple):
     value: Optional[str]
     original: Original
     error: bool
+    single_quoted: bool = False
 
 
 class Position:
@@ -127,18 +129,18 @@ def parse_unquoted_value(reader: Reader) -> str:
     return re.sub(r"\s+#.*", "", part).rstrip()
 
 
-def parse_value(reader: Reader) -> str:
+def parse_value(reader: Reader) -> Tuple[str, bool]:
     char = reader.peek(1)
     if char == "'":
         (value,) = reader.read_regex(_single_quoted_value)
-        return decode_escapes(_single_quote_escapes, value)
+        return decode_escapes(_single_quote_escapes, value), True
     elif char == '"':
         (value,) = reader.read_regex(_double_quoted_value)
-        return decode_escapes(_double_quote_escapes, value)
+        return decode_escapes(_double_quote_escapes, value), False
     elif char in ("", "\n", "\r"):
-        return ""
+        return "", False
     else:
-        return parse_unquoted_value(reader)
+        return parse_unquoted_value(reader), False
 
 
 def parse_binding(reader: Reader) -> Binding:
@@ -163,10 +165,12 @@ def parse_binding(reader: Reader) -> Binding:
             # `#` is part of the unquoted value.
             if len(equal_sign) > 1 and reader.peek(1) == "#":
                 value: Optional[str] = ""
+                single_quoted = False
             else:
-                value = parse_value(reader)
+                value, single_quoted = parse_value(reader)
         else:
             value = None
+            single_quoted = False
         reader.read_regex(_comment)
         reader.read_regex(_end_of_line)
         return Binding(
@@ -174,6 +178,7 @@ def parse_binding(reader: Reader) -> Binding:
             value=value,
             original=reader.get_marked(),
             error=False,
+            single_quoted=single_quoted,
         )
     except Error:
         reader.read_regex(_rest_of_line)

@@ -7,6 +7,22 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- Variable expansion now supports shell-like parameter operators beyond
+  `${VAR}` and `${VAR:-default}`: `${VAR:=default}` (assign the default for
+  later references when the variable is undefined), `${VAR:+alternate}`
+  (use the alternate only when the variable is non-empty) and
+  `${VAR:?message}` (raise `dotenv.MissingVariableError` with `message` when
+  the variable is missing or empty). Defaults, alternates and messages may
+  contain nested variable expressions, expanded recursively with cycle
+  detection (`dotenv.CyclicVariableError`, naming the variables on the
+  cycle) and a maximum expansion depth (`dotenv.InterpolationSyntaxError`).
+  Both error types derive from `dotenv.InterpolationError`. Additionally,
+  `\$` is now an escape keeping `\$` and `\${...}` literal, and
+  single-quoted values (and single-quoted sections inside expansions) are
+  no longer interpolated.
+
 ### Fixed
 
 - Fix a package build deprecation warning caused by a non-string `license` value in `pyproject.toml` by [@kurtmckee] in [#648]

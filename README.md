@@ -232,6 +232,41 @@ values defined in the following list:
 - Default value, if provided.
 - Empty string.
 
+### Expansion operators
+
+Beyond `${VAR}` and `${VAR:-default}`, the following shell-like parameter
+expansions are supported:
+
+```bash
+DB_HOST=${DB_HOST:-127.0.0.1}      # default when DB_HOST is undefined
+DB_PORT=${DB_PORT:?DB_PORT is required}  # error when missing or empty
+LOG_LEVEL=${LOG_LEVEL:+${LOG_LEVEL}}     # alt value only when non-empty
+REGION=${REGION:-${FALLBACK_REGION}}     # defaults may nest, recursively
+CACHE_DIR=${CACHE_DIR:=/tmp/cache}  # assign default for later references
+```
+
+- `${VAR:-default}` uses `default` when `VAR` is undefined. An empty string is
+  not the same as undefined: `VAR=` counts as defined.
+- `${VAR:=default}` behaves like `:-` when `VAR` is undefined, and also
+  remembers the expanded `default` so later references in the same file see
+  it (without adding `VAR` to the result of `dotenv_values`).
+- `${VAR:+alternate}` expands to `alternate` only when `VAR` is set to a
+  non-empty value, and to the empty string otherwise.
+- `${VAR:?message}` raises `dotenv.MissingVariableError` (including `message`)
+  when `VAR` is missing or empty.
+
+Defaults, alternates and messages may themselves contain variable
+expressions, which are expanded recursively. Cyclic references raise
+`dotenv.CyclicVariableError` naming the variables on the cycle, and nesting
+deeper than `dotenv.variables.MAX_EXPANSION_DEPTH` raises
+`dotenv.InterpolationSyntaxError`. Both derive from
+`dotenv.InterpolationError`, so syntax problems can be told apart from
+validation failures (`MissingVariableError`).
+
+`\$` is an escape: `\$` and `\${...}` stay literal. Single-quoted values are
+never interpolated (`A='${B}'` keeps `${B}` literally), and single-quoted
+sections inside an expansion (e.g. `${A:-'${B}'}`) are literal too.
+
 ## Related Projects
 
 - [environs](https://github.com/sloria/environs)
